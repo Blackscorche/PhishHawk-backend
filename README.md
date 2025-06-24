@@ -109,10 +109,6 @@ npm run dev
 
 ---
 
-## 🤝 Contributing
 
-PRs are welcome. This backend is a foundation — let's build a stronger internet together.
 
----
-
-Built by a world-class cybersecurity engineer with one goal: **shut phishing down.**
+This Project Was Built with one goal: **shut phishing down.**
