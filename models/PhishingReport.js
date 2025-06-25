@@ -1,14 +1,14 @@
-const mongoose = require("mongoose");
+import mongoose from "mongoose";
 
-const PhishingReportSchema = new mongoose.Schema({
-  url: { type: String, required: true },
+const phishingReportSchema = new mongoose.Schema({
+  url: String,
   domainAge: Number,
   hasSSL: Boolean,
   containsPhishingKeywords: Boolean,
   virusTotalHit: Boolean,
-  score: Number,
+  riskScore: Number,
   riskLevel: String,
-  reported: { type: Boolean, default: false }
+  takedownSubmitted: Boolean
 }, { timestamps: true });
 
-module.exports = mongoose.model("PhishingReport", PhishingReportSchema);
+export default mongoose.model("PhishingReport", phishingReportSchema);

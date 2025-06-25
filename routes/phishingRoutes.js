@@ -1,8 +1,10 @@
-const express = require("express");
-const router = express.Router();
-const { reportPhishingUrl, getAllReports } = require("../controllers/phishingController");
+import express from "express";
+import { phishingValidationRules, validatePhishingRequest } from "../middleware/validateRequest.js";
+import { phishingRateLimiter } from "../middleware/rateLimiter.js";
+import { submitPhishingReport, getAllReports } from "../controllers/phishingController.js";
 
-router.post("/", reportPhishingUrl);
+const router = express.Router();
+router.post("/", phishingRateLimiter, phishingValidationRules, validatePhishingRequest, submitPhishingReport);
 router.get("/", getAllReports);
 
-module.exports = router;
+export default router;

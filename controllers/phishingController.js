@@ -1,31 +1,35 @@
-const PhishingReport = require("../models/PhishingReport");
-const { scoreUrl, getRiskLevel } = require("../utils/scorer");
-const { sendTakedownReport } = require("../utils/mailer");
+import PhishingReport from "../models/PhishingReport.js";
+import { scorePhishingUrl } from "../services/scoring.js";
+import { sendTakedownEmail } from "../services/sendTakedownEmail.js";
+import { checkUrlWithVirusTotal } from "../services/virusTotalChecker.js";
 
-const reportPhishingUrl = async (req, res) => {
-  const data = req.body;
-  const score = scoreUrl(data);
-  const riskLevel = getRiskLevel(score);
+export const submitPhishingReport = async (req, res) => {
+  try {
+    const { url, domainAge, hasSSL, containsPhishingKeywords } = req.body;
+    const virusTotalHit = await checkUrlWithVirusTotal(url);
+    const { score, risk } = scorePhishingUrl({ domainAge, hasSSL, containsPhishingKeywords, virusTotalHit });
 
-  const report = new PhishingReport({
-    ...data,
-    score,
-    riskLevel,
-    reported: riskLevel === "High"
-  });
+    const report = new PhishingReport({
+      url, domainAge, hasSSL, containsPhishingKeywords, virusTotalHit,
+      riskScore: score,
+      riskLevel: risk,
+      takedownSubmitted: false
+    });
 
-  await report.save();
+    if (risk === "High") {
+      await sendTakedownEmail(report);
+      report.takedownSubmitted = true;
+    }
 
-  if (riskLevel === "High") {
-    await sendTakedownReport(data.url);
+    await report.save();
+    res.status(201).json(report);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Internal server error" });
   }
-
-  res.status(201).json(report);
 };
 
-const getAllReports = async (req, res) => {
+export const getAllReports = async (req, res) => {
   const reports = await PhishingReport.find().sort({ createdAt: -1 });
   res.json(reports);
 };
-
-module.exports = { reportPhishingUrl, getAllReports };
