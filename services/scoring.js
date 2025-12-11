@@ -1,13 +1,15 @@
 export function scorePhishingUrl({ domainAge, hasSSL, containsPhishingKeywords, virusTotalHit }) {
   let score = 0;
-  if (domainAge <= 7) score += 1;
-  if (!hasSSL) score += 1;
-  if (containsPhishingKeywords) score += 2;
-  if (virusTotalHit) score += 3;
+  
+  // Enhanced scoring
+  if (domainAge !== undefined && domainAge <= 7) score += 25;
+  if (hasSSL === false) score += 20;
+  if (containsPhishingKeywords === true) score += 30;
+  if (virusTotalHit === true) score += 25;
 
   let risk = "Low";
-  if (score >= 3) risk = "Medium";
-  if (score >= 5) risk = "High";
+  if (score >= 70) risk = "High";
+  else if (score >= 40) risk = "Medium";
 
-  return { score, risk };
+  return { score: Math.min(score, 100), risk };
 }

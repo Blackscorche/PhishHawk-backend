@@ -1,5 +1,5 @@
 const nodemailer = require("nodemailer");
-require("dotenv").config();
+// dotenv is already loaded in server.js, no need to load again
 
 async function sendTakedownReport(url) {
   const transporter = nodemailer.createTransport({
