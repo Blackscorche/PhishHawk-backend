@@ -12,13 +12,13 @@ const phishingReportSchema = new mongoose.Schema({
     type: String,
     required: true,
     default: 'manual',
-    enum: ['manual', 'twitter', 'rss', 'email', 'bulk_import', 'api', 'urlhaus']
+    enum: ['manual', 'twitter', 'rss', 'email', 'bulk_import', 'api', 'urlhaus', 'sms', 'social', 'other']
   },
   priority: {
     type: String,
     required: true,
     default: 'medium',
-    enum: ['low', 'medium', 'high']
+    enum: ['low', 'medium', 'high', 'critical']
   },
   riskScore: {
     type: Number,

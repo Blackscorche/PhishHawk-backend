@@ -131,6 +131,36 @@ export class AutomatedRiskScoringEngine {
       checks.urlhausError = intelligence.urlhaus.error;
     }
 
+    // Add Google Safe Browsing scoring
+    if (intelligence.googleSafeBrowsing && !intelligence.googleSafeBrowsing.error) {
+      const gsb = intelligence.googleSafeBrowsing;
+      
+      if (gsb.isMalicious) {
+        // Google Safe Browsing flagged this URL - very strong indicator
+        riskScore += 45;
+        checks.googleSafeBrowsingFlagged = true;
+        checks.googleSafeBrowsingThreats = gsb.threatTypes || [];
+        
+        // Additional scoring based on threat types
+        if (gsb.threatTypes) {
+          if (gsb.threatTypes.includes('SOCIAL_ENGINEERING')) {
+            riskScore += 15; // Phishing-specific threat
+            checks.googleSafeBrowsingPhishing = true;
+          }
+          if (gsb.threatTypes.includes('MALWARE')) {
+            riskScore += 10;
+            checks.googleSafeBrowsingMalware = true;
+          }
+        }
+      } else {
+        // Not flagged by Google - slightly reduces risk
+        riskScore = Math.max(0, riskScore - 3);
+        checks.googleSafeBrowsingClean = true;
+      }
+    } else if (intelligence.googleSafeBrowsing?.error && !intelligence.googleSafeBrowsing?.configured === false) {
+      checks.googleSafeBrowsingError = intelligence.googleSafeBrowsing.error;
+    }
+
     // Cap the score at 100
     riskScore = Math.min(100, Math.max(0, riskScore));
 

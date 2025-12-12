@@ -5,15 +5,16 @@ Phishing Takedown Automation System - Backend API
 ## Features
 
 - ✅ **Two-Phase Automated Process** following flowchart design:
-  - **Phase 1: Intelligence Gathering** - VirusTotal & PhishTank API integration
+  - **Phase 1: Intelligence Gathering** - VirusTotal, URLhaus & Google Safe Browsing API integration
   - **Automated Risk Scoring Engine** - Combines intelligence with URL analysis
-  - **Phase 2: Enforcement** - Cloudflare Registrar API for domain takedown
+  - **Phase 2: Enforcement** - Cloudflare Registrar API for domain takedown + Email notifications
   - **Immutable Audit Logging** - Complete audit trail of all actions
 - ✅ Automated URL risk analysis with rule-based scoring
-- ✅ VirusTotal and PhishTank API integration
+- ✅ Multi-API Intelligence: VirusTotal, URLhaus (free), Google Safe Browsing
 - ✅ Cloudflare Registrar API for automated domain takedown
+- ✅ Email takedown reports (APWG, registrars)
 - ✅ Immutable audit log system
-- ✅ URL scraping from RSS feeds and PhishTank
+- ✅ URL scraping from RSS feeds, URLhaus, and Twitter
 - ✅ MongoDB database for storing reports
 - ✅ RESTful API with pagination and filtering
 - ✅ Comprehensive logging system
@@ -25,13 +26,15 @@ The system follows a strict two-phase automated process:
 1. **Input**: Suspected Phishing Domain
 2. **Phase 1: Intelligence Gathering**
    - VirusTotal API Multi-engine Scan
-   - PhishTank API Crowdsourced Check
+   - URLhaus Malware URL Check (Free, no API key required)
+   - Google Safe Browsing API (Optional)
 3. **Automated Risk Scoring Engine**
    - Combines intelligence results with URL analysis
    - Calculates final risk score (0-100)
 4. **Decision Branch**:
    - **High-Risk Score (≥70)**: 
      - Phase 2: Cloudflare Registrar API Enforcement
+     - Send takedown email to APWG/registrars
      - Confirmation & Immutable Audit Log
      - Output: Domain Takedown Initiated
    - **Low-Risk Score (<70)**:
@@ -42,13 +45,14 @@ The system follows a strict two-phase automated process:
 ### Prerequisites
 
 - Node.js 18+ 
-- MongoDB (local or cloud instance)
+- MongoDB (local or cloud instance like MongoDB Atlas)
 - API keys (see below for required vs optional):
-  - **VirusTotal API key** (Required for Phase 1)
-  - **PhishTank API key** (Required for Phase 1)
-  - **Cloudflare API credentials** (Required for Phase 2 enforcement)
+  - **VirusTotal API key** (Recommended - free tier available)
+  - **URLhaus** - No API key required (free public API)
+  - **Google Safe Browsing API key** (Optional - free tier available)
+  - **Cloudflare API credentials** (Optional - for automated domain takedown)
+  - SMTP credentials (Optional - for email takedown reports)
   - Twitter Bearer Token (Optional - for Twitter scraping)
-  - SMTP credentials (Optional - for email notifications)
 
 ### Installation
 
@@ -126,11 +130,14 @@ npm start
 - `POST /api/phishing/:id/reanalyze` - Re-analyze a report
 - `POST /api/phishing/:id/takedown` - Submit takedown request
 - `GET /api/phishing/metrics` - Get system metrics
+- `GET /api/phishing/api-status` - Check external API configuration status
 
 ### URL Scraping
 
 - `POST /api/scraping/start` - Start automated URL scraping
 - `POST /api/scraping/stop` - Stop automated URL scraping
+- `GET /api/scraping/status` - Get current scraping status
+- `POST /api/scraping/scrape-now` - Manually trigger a scrape from a source
 
 ### Health Check
 
@@ -175,12 +182,38 @@ Access audit logs via: `GET /api/phishing/:id/audit-logs`
 
 ## API Keys Setup
 
-**See [API_KEYS_GUIDE.md](./API_KEYS_GUIDE.md) for detailed instructions on obtaining and configuring all required API keys.**
+**See [API_KEYS_GUIDE.md](./API_KEYS_GUIDE.md) for detailed instructions on obtaining and configuring all API keys.**
 
 Quick summary:
-- **Phase 1 (Required)**: VirusTotal API Key, PhishTank API Key
-- **Phase 2 (Required)**: Cloudflare API Key, Email, Account ID
-- **Optional**: SMTP credentials, Twitter Bearer Token
+- **Phase 1 Intelligence APIs**:
+  - VirusTotal API Key (Recommended) - Get from https://www.virustotal.com/gui/join-us
+  - URLhaus (No key required) - Free public API
+  - Google Safe Browsing API Key (Optional) - Get from Google Cloud Console
+- **Phase 2 Enforcement APIs**:
+  - Cloudflare API Token + Account ID (Optional) - For automated domain takedown
+  - SMTP credentials (Optional) - For email takedown reports
+- **Scraping Sources**:
+  - Twitter Bearer Token (Optional) - For Twitter phishing reports
+
+## Quick Start
+
+```bash
+# 1. Clone the repository
+git clone <repo-url>
+cd PhishHawk-backend
+
+# 2. Install dependencies
+npm install
+
+# 3. Copy and configure environment variables
+cp .env.example .env
+# Edit .env with your API keys
+
+# 4. Start the server
+npm run dev
+```
+
+The backend will be available at `http://localhost:5000`
 
 ## License
 

@@ -9,7 +9,10 @@ export const phishingValidationRules = [
       protocols: ['http', 'https']
     })
     .withMessage("Invalid URL format"),
-  body("source").optional().isIn(['manual', 'twitter', 'rss', 'email', 'bulk_import', 'api', 'urlhaus']).withMessage("Invalid source"),
+  body("source").optional().isIn([
+    'manual', 'twitter', 'rss', 'email', 'bulk_import', 'api', 'urlhaus',
+    'sms', 'social', 'other' // Additional sources from frontend
+  ]).withMessage("Invalid source"),
   body("priority").optional().isIn(['low', 'medium', 'high', 'critical']).withMessage("Invalid priority")
 ];
 

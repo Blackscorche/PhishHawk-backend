@@ -3,6 +3,7 @@ import PhishingReport from "../models/PhishingReport.js";
 import { AutomatedRiskScoringEngine } from "../services/automatedRiskScoring.js";
 import { CloudflareRegistrarService } from "../services/cloudflareRegistrar.js";
 import { AuditLogger } from "../services/auditLogger.js";
+import { sendTakedownEmail } from "../services/sendTakedownEmail.js";
 import { logger } from "../utils/logger.js";
 
 const riskScoringEngine = new AutomatedRiskScoringEngine();
@@ -249,12 +250,40 @@ export const submitPhishingReport = async (req, res) => {
         };
       }
 
+      // Send takedown email report (APWG, registrars, etc.)
+      let emailResult = null;
+      try {
+        logger.info(`[FLOWCHART] Sending takedown email report for ${domain}`);
+        const emailReport = dbAvailable && report ? report : {
+          url: urlToProcess,
+          riskScore: scoringResult.score,
+          riskLevel: scoringResult.riskLevel,
+          riskChecks: scoringResult.checks,
+          validationResults: {
+            virusTotal: intelligence.virusTotal,
+            urlhaus: intelligence.urlhaus
+          },
+          status: 'high_risk',
+          createdAt: new Date()
+        };
+        emailResult = await sendTakedownEmail(emailReport, `High-risk phishing URL detected - Risk Score: ${scoringResult.score}/100`);
+        if (emailResult.sent) {
+          logger.info(`[FLOWCHART] Takedown email sent successfully for ${domain}`);
+        } else {
+          logger.warn(`[FLOWCHART] Email not sent: ${emailResult.message || 'SMTP not configured'}`);
+        }
+      } catch (emailError) {
+        logger.warn('Failed to send takedown email:', emailError.message);
+        emailResult = { sent: false, error: emailError.message };
+      }
+
       // Confirmation & Immutable Audit Log
       logger.info(`[FLOWCHART] Confirmation & Immutable Audit Log for ${domain}`);
       
       const confirmation = {
         takedownInitiated: takedownSuccess,
         cloudflareResult: takedownResult,
+        emailResult: emailResult,
         riskScore: scoringResult.score,
         riskLevel: scoringResult.riskLevel,
         timestamp: new Date().toISOString()

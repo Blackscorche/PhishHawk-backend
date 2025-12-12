@@ -1,10 +1,14 @@
 import axios from 'axios';
 import { logger } from '../utils/logger.js';
+import { GoogleSafeBrowsingService } from './googleSafeBrowsing.js';
 
 export class APIValidator {
   constructor() {
     // Load environment variables (in case they're loaded after class definition)
     this.loadEnvVars();
+    
+    // Initialize Google Safe Browsing service
+    this.googleSafeBrowsing = new GoogleSafeBrowsingService();
     
     // Rate limiting
     this.lastVirusTotalCall = 0;
@@ -27,6 +31,7 @@ export class APIValidator {
     const results = {
       virusTotal: null,
       urlhaus: null,
+      googleSafeBrowsing: null,
       validatedAt: new Date()
     };
 
@@ -38,6 +43,9 @@ export class APIValidator {
 
     // URLhaus doesn't require API key for basic queries
     validationPromises.push(this.checkUrlhaus(url).catch(err => ({ error: err.message })));
+
+    // Google Safe Browsing (if configured)
+    validationPromises.push(this.checkGoogleSafeBrowsing(url).catch(err => ({ error: err.message })));
 
     try {
       const validationResults = await Promise.allSettled(validationPromises);
@@ -51,6 +59,11 @@ export class APIValidator {
       // URLhaus result
       results.urlhaus = validationResults[index].status === 'fulfilled' ? 
         validationResults[index].value : { error: validationResults[index].reason?.message || 'Unknown error' };
+      index++;
+
+      // Google Safe Browsing result
+      results.googleSafeBrowsing = validationResults[index].status === 'fulfilled' ? 
+        validationResults[index].value : { error: validationResults[index].reason?.message || 'Unknown error' };
       
     } catch (error) {
       logger.error('Error in API validation:', error);
@@ -58,6 +71,13 @@ export class APIValidator {
     }
 
     return results;
+  }
+
+  /**
+   * Check URL using Google Safe Browsing API
+   */
+  async checkGoogleSafeBrowsing(url) {
+    return await this.googleSafeBrowsing.checkUrl(url);
   }
 
   async checkVirusTotal(url) {
