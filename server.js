@@ -70,17 +70,13 @@ const connectDB = async () => {
     }
 
     await mongoose.connect(MONGO_URI, {
-      serverSelectionTimeoutMS: 10000, // 10 seconds timeout - fail faster
+      serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
       connectTimeoutMS: 10000,
-      retryWrites: true,
-      w: 'majority',
       maxPoolSize: 10,
       minPoolSize: 1
     });
 
-    // Disable mongoose buffering after connection
-    mongoose.set('bufferCommands', false);
     logger.info('✅ Connected to MongoDB');
     logger.info(`📦 Database: ${mongoose.connection.name}`);
   } catch (err) {
