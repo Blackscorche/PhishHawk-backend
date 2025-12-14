@@ -8,7 +8,11 @@ import {
   reanalyzeReport,
   submitTakedown,
   getMetrics,
-  getAuditLogs
+  getAuditLogs,
+  getUrlhausUrls,
+  getVirusTotalUrls,
+  markFalsePositive,
+  refreshStatus
 } from "../controllers/phishingController.js";
 import { APIValidator } from "../services/apiValidator.js";
 
@@ -89,8 +93,51 @@ router.get("/api-status", async (req, res) => {
   });
 });
 
+// Health check endpoints for individual APIs
+router.get("/health/virustotal", async (req, res) => {
+  try {
+    const result = await apiValidator.checkVirusTotal('https://google.com');
+    res.json({ 
+      status: result.error ? 'down' : 'active',
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    res.json({ status: 'down', timestamp: new Date().toISOString() });
+  }
+});
+
+router.get("/health/urlhaus", async (req, res) => {
+  try {
+    const result = await apiValidator.checkUrlhaus('https://google.com');
+    res.json({ 
+      status: result.error ? 'down' : 'active',
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    res.json({ status: 'down', timestamp: new Date().toISOString() });
+  }
+});
+
+router.get("/health/google", async (req, res) => {
+  try {
+    const result = await apiValidator.checkGoogleSafeBrowsing('https://google.com');
+    res.json({ 
+      status: result.error ? 'down' : 'active',
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) {
+    res.json({ status: 'down', timestamp: new Date().toISOString() });
+  }
+});
+
 // Metrics endpoint
 router.get("/metrics", getMetrics);
+
+// Fetch URLs from URLhaus
+router.get("/urlhaus", getUrlhausUrls);
+
+// Fetch URLs analyzed by VirusTotal from database
+router.get("/virustotal", getVirusTotalUrls);
 
 // Get audit logs for a report
 router.get("/:id/audit-logs", getAuditLogs);
@@ -109,5 +156,11 @@ router.post("/:id/reanalyze", reanalyzeReport);
 
 // Submit takedown request
 router.post("/:id/takedown", submitTakedown);
+
+// Mark as false positive
+router.patch("/:id/false-positive", markFalsePositive);
+
+// Refresh status - recheck if site is down
+router.post("/:id/refresh-status", refreshStatus);
 
 export default router;

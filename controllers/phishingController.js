@@ -4,6 +4,7 @@ import { AutomatedRiskScoringEngine } from "../services/automatedRiskScoring.js"
 import { CloudflareRegistrarService } from "../services/cloudflareRegistrar.js";
 import { AuditLogger } from "../services/auditLogger.js";
 import { sendTakedownEmail } from "../services/sendTakedownEmail.js";
+import { URLScraper } from "../services/urlScraper.js";
 import { logger } from "../utils/logger.js";
 
 const riskScoringEngine = new AutomatedRiskScoringEngine();
@@ -732,6 +733,7 @@ export const getMetrics = async (req, res) => {
       highRiskCount: 0,
       resolvedCount: 0,
       pendingCount: 0,
+      avgLatency: 0,
       dbAvailable: false
     });
   }
@@ -739,38 +741,77 @@ export const getMetrics = async (req, res) => {
   try {
     const [
       totalReports,
-      urlsByStatus,
-      urlsByRisk,
-      recentUrls,
-      avgRiskScore
+      highRiskCount,
+      resolvedCount,
+      pendingCount,
+      latencyData
     ] = await Promise.all([
+      // Total Reports - count of all scanned URLs
       PhishingReport.countDocuments(),
-      PhishingReport.aggregate([
-        { $group: { _id: '$status', count: { $sum: 1 } } }
-      ]),
+      
+      // High Risk - riskScore >= 80 AND status = ACTIVE (high_risk or pending)
+      PhishingReport.countDocuments({
+        riskScore: { $gte: 80 },
+        status: { $in: ['high_risk', 'pending'] }
+      }),
+      
+      // Resolved - status = TAKEN_DOWN (resolved, takedown_initiated, takedown_sent)
+      PhishingReport.countDocuments({
+        status: { $in: ['resolved', 'takedown_initiated', 'takedown_sent'] }
+      }),
+      
+      // Pending - takedownStatus = PENDING (status in pending/high_risk/medium_risk/low_risk AND takedownSubmitted = false)
+      PhishingReport.countDocuments({
+        status: { $in: ['pending', 'high_risk', 'medium_risk', 'low_risk'] },
+        takedownSubmitted: false
+      }),
+      
+      // Avg Latency - avg(timeDetected → timeTakenDown)
+      // Calculate from metadata.takedownTime or updatedAt where status is resolved
       PhishingReport.aggregate([
         {
+          $match: {
+            status: { $in: ['resolved', 'takedown_initiated', 'takedown_sent'] },
+            createdAt: { $exists: true }
+          }
+        },
+        {
+          $project: {
+            latency: {
+              $cond: {
+                if: { $and: [{ $ne: ['$metadata.takedownTime', null] }, { $ne: ['$metadata.takedownTime', undefined] }] },
+                then: {
+                  $subtract: [
+                    { $dateFromString: { dateString: '$metadata.takedownTime' } },
+                    '$createdAt'
+                  ]
+                },
+                else: {
+                  $subtract: ['$updatedAt', '$createdAt']
+                }
+              }
+            }
+          }
+        },
+        {
           $group: {
-            _id: '$riskLevel',
-            count: { $sum: 1 }
+            _id: null,
+            avgLatency: { $avg: '$latency' }
           }
         }
-      ]),
-      PhishingReport.countDocuments({
-        createdAt: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
-      }),
-      PhishingReport.aggregate([
-        { $group: { _id: null, avgRisk: { $avg: '$riskScore' } } }
       ])
     ]);
 
+    const avgLatency = latencyData[0]?.avgLatency 
+      ? Math.round(latencyData[0].avgLatency / (1000 * 60)) // Convert to minutes
+      : 0;
+
     const metrics = {
       totalReports,
-      urlsByStatus: urlsByStatus.map(item => ({ status: item._id, count: item.count })),
-      urlsByRisk: urlsByRisk.map(item => ({ risk_level: item._id, count: item.count })),
-      recentUrls,
-      averageRiskScore: Math.round(avgRiskScore[0]?.avgRisk || 0),
-      takedownsSent: await PhishingReport.countDocuments({ takedownSubmitted: true }),
+      highRiskCount,
+      resolvedCount,
+      pendingCount,
+      avgLatency,
       lastUpdated: new Date().toISOString()
     };
     
@@ -783,6 +824,258 @@ export const getMetrics = async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: "Failed to fetch metrics" 
+    });
+  }
+};
+
+// Fetch URLs directly from URLhaus
+export const getUrlhausUrls = async (req, res) => {
+  try {
+    const urlScraper = new URLScraper();
+    const urls = await urlScraper.scrapeUrlhaus();
+    
+    res.json({
+      success: true,
+      data: urls,
+      count: urls.length,
+      source: 'urlhaus',
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    logger.error('Error fetching URLhaus URLs:', err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch URLs from URLhaus",
+      message: err.message
+    });
+  }
+};
+
+// Mark report as false positive
+export const markFalsePositive = async (req, res) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      error: "Database not available"
+    });
+  }
+
+  try {
+    const { id } = req.params;
+    const report = await PhishingReport.findById(id);
+    
+    if (!report) {
+      return res.status(404).json({
+        success: false,
+        message: 'Report not found'
+      });
+    }
+
+    const previousStatus = report.status;
+    report.status = 'false_positive';
+    await report.save();
+
+    try {
+      const urlObj = new URL(report.url);
+      await AuditLogger.log('status_changed', report._id, urlObj.hostname, {
+        previousStatus,
+        newStatus: 'false_positive',
+        markedBy: 'dashboard',
+        timestamp: new Date().toISOString()
+      });
+    } catch (err) {
+      logger.warn('Failed to log false positive to audit log:', err);
+    }
+
+    res.json({
+      success: true,
+      data: report,
+      message: 'Report marked as false positive'
+    });
+  } catch (err) {
+    logger.error('Error marking false positive:', err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to mark as false positive"
+    });
+  }
+};
+
+// Refresh status - recheck if site is down
+export const refreshStatus = async (req, res) => {
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      success: false,
+      error: "Database not available"
+    });
+  }
+
+  try {
+    const { id } = req.params;
+    const report = await PhishingReport.findById(id);
+    
+    if (!report) {
+      return res.status(404).json({
+        success: false,
+        message: 'Report not found'
+      });
+    }
+
+    const url = report.url;
+    let isDown = false;
+    let dnsResolves = false;
+
+    // HTTP check
+    try {
+      const axios = (await import('axios')).default;
+      const response = await axios.get(url, {
+        timeout: 10000,
+        validateStatus: () => true // Accept any status code
+      });
+      isDown = response.status >= 400 || response.status === 0;
+    } catch (httpError) {
+      isDown = true; // Site is likely down if request fails
+    }
+
+    // DNS resolution check
+    try {
+      const dns = await import('dns').then(m => m.promises);
+      const urlObj = new URL(url);
+      await dns.resolve4(urlObj.hostname);
+      dnsResolves = true;
+    } catch (dnsError) {
+      dnsResolves = false;
+    }
+
+    // If site is down (HTTP fails AND DNS doesn't resolve), mark as TAKEN_DOWN
+    if (isDown && !dnsResolves) {
+      report.status = 'resolved';
+      report.metadata = {
+        ...report.metadata,
+        takedownTime: new Date().toISOString(),
+        lastChecked: new Date().toISOString(),
+        checkResult: 'site_down'
+      };
+      await report.save();
+
+      try {
+        const urlObj = new URL(report.url);
+        await AuditLogger.log('status_changed', report._id, urlObj.hostname, {
+          previousStatus: report.status,
+          newStatus: 'resolved',
+          reason: 'status_refresh',
+          isDown,
+          dnsResolves,
+          timestamp: new Date().toISOString()
+        });
+      } catch (err) {
+        logger.warn('Failed to log status refresh to audit log:', err);
+      }
+    } else {
+      // Update last checked time
+      report.metadata = {
+        ...report.metadata,
+        lastChecked: new Date().toISOString(),
+        checkResult: isDown ? 'http_down' : 'site_active',
+        dnsResolves
+      };
+      await report.save();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        ...report.toObject(),
+        checkResult: {
+          isDown,
+          dnsResolves,
+          status: isDown && !dnsResolves ? 'resolved' : report.status
+        }
+      },
+      message: isDown && !dnsResolves 
+        ? 'Site is down - marked as resolved'
+        : 'Status refreshed'
+    });
+  } catch (err) {
+    logger.error('Error refreshing status:', err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to refresh status"
+    });
+  }
+};
+
+// Fetch URLs analyzed by VirusTotal from database
+export const getVirusTotalUrls = async (req, res) => {
+  // Check if MongoDB is connected
+  if (mongoose.connection.readyState !== 1) {
+    return res.json({
+      success: true,
+      data: [],
+      message: 'Database not available - returning empty results',
+      dbAvailable: false
+    });
+  }
+
+  try {
+    const { 
+      page = 1, 
+      limit = 50,
+      minMalicious = 0
+    } = req.query;
+
+    const query = {
+      'intelligence.virusTotal': { $exists: true, $ne: null },
+      'intelligence.virusTotal.error': { $exists: false }
+    };
+
+    // Filter by minimum malicious count if provided
+    if (minMalicious) {
+      query['intelligence.virusTotal.malicious'] = { $gte: parseInt(minMalicious) };
+    }
+
+    const sort = { createdAt: -1 };
+
+    const options = {
+      page: parseInt(page),
+      limit: parseInt(limit),
+      sort
+    };
+
+    const result = await PhishingReport.paginate(query, options);
+    
+    // Format the response to include VirusTotal data
+    const formattedData = result.docs.map(report => ({
+      _id: report._id,
+      url: report.url,
+      source: report.source,
+      riskLevel: report.riskLevel,
+      riskScore: report.riskScore,
+      status: report.status,
+      createdAt: report.createdAt,
+      virusTotal: report.intelligence?.virusTotal || null
+    }));
+    
+    res.json({
+      success: true,
+      data: formattedData,
+      pagination: {
+        currentPage: result.page,
+        totalPages: result.totalPages,
+        totalItems: result.totalDocs,
+        itemsPerPage: result.limit,
+        hasNextPage: result.hasNextPage,
+        hasPrevPage: result.hasPrevPage
+      },
+      source: 'virustotal',
+      timestamp: new Date().toISOString()
+    });
+  } catch (err) {
+    logger.error('Error fetching VirusTotal URLs:', err);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch URLs analyzed by VirusTotal",
+      message: err.message
     });
   }
 };
