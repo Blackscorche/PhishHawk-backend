@@ -20,7 +20,7 @@ const cloudflareService = new CloudflareRegistrarService();
  */
 export const submitPhishingReport = async (req, res) => {
   let report = null;
-  const dbAvailable = mongoose.connection.readyState === 1;
+  let dbAvailable = mongoose.connection.readyState === 1;
   
   try {
     const { url, source = 'manual', priority = 'medium' } = req.body;
