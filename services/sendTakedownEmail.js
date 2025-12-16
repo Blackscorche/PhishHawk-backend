@@ -1,6 +1,15 @@
 import nodemailer from "nodemailer";
 import { logger } from "../utils/logger.js";
+import { findAbuseEmails } from "./providerEmailFinder.js";
 
+/**
+ * Send takedown emails to multiple recipients:
+ * 1. Hosting provider abuse email (if detected)
+ * 2. Domain registrar abuse email (if detected)
+ * 3. Cloudflare abuse email (if using Cloudflare)
+ * 4. APWG tracking email (always)
+ * 5. Custom EMAIL_TO from .env (if set)
+ */
 export async function sendTakedownEmail(report, customReason = null) {
   try {
     if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
@@ -20,29 +29,149 @@ export async function sendTakedownEmail(report, customReason = null) {
 
     const reason = customReason || generateReason(report);
 
-    const mailOptions = {
-      from: process.env.SMTP_FROM || `"PhishHawk" <${process.env.SMTP_USER}>`,
-      to: process.env.EMAIL_TO || "report@apwg.org",
-      subject: `Phishing Report - ${report.url}`,
-      text: reason,
-      html: generateEmailHTML(report, reason)
-    };
-
-    const result = await transporter.sendMail(mailOptions);
+    // Find all abuse email addresses for this domain
+    logger.info(`[Email] Finding abuse contacts for ${report.url}...`);
+    let abuseContacts;
+    try {
+      abuseContacts = await findAbuseEmails(report.url);
+      logger.info(`[Email] Found ${abuseContacts.emails?.length || 0} abuse contacts`);
+    } catch (abuseError) {
+      logger.warn(`[Email] Error finding abuse emails:`, abuseError.message);
+      // Continue with default APWG email if abuse email finding fails
+      abuseContacts = {
+        domain: null,
+        hostingProvider: null,
+        registrar: null,
+        cloudflare: null,
+        emails: [{
+          type: 'tracking',
+          email: 'report@apwg.org',
+          reason: 'Fallback - APWG tracking (abuse email detection failed)'
+        }]
+      };
+    }
     
-    logger.info(`Takedown email sent for ${report.url}`);
+    // Collect all unique email addresses
+    const emailRecipients = new Set();
+    const emailDetails = [];
+
+    // Add provider-specific abuse emails
+    abuseContacts.emails.forEach(contact => {
+      if (contact.email && !emailRecipients.has(contact.email)) {
+        emailRecipients.add(contact.email);
+        emailDetails.push(contact);
+      }
+    });
+
+    // Add custom EMAIL_TO if set (for manual monitoring)
+    if (process.env.EMAIL_TO) {
+      if (!emailRecipients.has(process.env.EMAIL_TO)) {
+        emailRecipients.add(process.env.EMAIL_TO);
+        emailDetails.push({
+          type: 'custom',
+          email: process.env.EMAIL_TO,
+          reason: 'Custom monitoring email from .env'
+        });
+      }
+    }
+
+    // If no provider emails found, use APWG as default
+    if (emailRecipients.size === 0) {
+      emailRecipients.add('report@apwg.org');
+      emailDetails.push({
+        type: 'tracking',
+        email: 'report@apwg.org',
+        reason: 'Default - APWG tracking (no provider emails found)'
+      });
+    }
+
+    const recipients = Array.from(emailRecipients);
+    logger.info(`[Email] Sending takedown emails to ${recipients.length} recipients:`, recipients);
+
+    // Send email to all recipients
+    const results = [];
+    for (const recipient of recipients) {
+      try {
+        const mailOptions = {
+          from: process.env.SMTP_FROM || `"CantPhishMe" <${process.env.SMTP_USER}>`,
+          to: recipient,
+          subject: `Phishing Report - ${report.url}`,
+          text: reason,
+          html: generateEmailHTML(report, reason, recipient)
+        };
+
+        const result = await transporter.sendMail(mailOptions);
+        results.push({
+          recipient: recipient,
+          sent: true,
+          messageId: result.messageId,
+          response: result.response || 'Email accepted by server',
+          sentAt: new Date().toISOString()
+        });
+        logger.info(`[Email] ✓ Sent to ${recipient} - Message ID: ${result.messageId}`);
+        logger.info(`[Email] Server response: ${result.response || 'Accepted'}`);
+      } catch (emailError) {
+        logger.error(`[Email] ✗ Failed to send to ${recipient}:`, emailError.message);
+        results.push({
+          recipient: recipient,
+          sent: false,
+          error: emailError.message
+        });
+      }
+    }
+
+    const successCount = results.filter(r => r.sent).length;
+    const failCount = results.filter(r => !r.sent).length;
+    
+    logger.info(`[Email] Takedown emails sent: ${successCount} successful, ${failCount} failed for ${report.url}`);
+    
+    // Log detailed results
+    logger.info(`[Email] Detailed results:`);
+    results.forEach((r, idx) => {
+      if (r.sent) {
+        logger.info(`  [${idx + 1}] ✓ ${r.recipient} - Message ID: ${r.messageId} - Response: ${r.response || 'Accepted'}`);
+      } else {
+        logger.error(`  [${idx + 1}] ✗ ${r.recipient} - Error: ${r.error}`);
+      }
+    });
     
     return {
-      sent: true,
-      messageId: result.messageId,
-      sentAt: new Date()
+      sent: successCount > 0,
+      totalRecipients: recipients.length,
+      successful: successCount,
+      failed: failCount,
+      results: results,
+      abuseContacts: abuseContacts,
+      sentAt: new Date().toISOString(),
+      // Add verification info
+      verification: {
+        smtpConfigured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+        smtpHost: process.env.SMTP_HOST || 'Not configured',
+        fromAddress: process.env.SMTP_FROM || process.env.SMTP_USER || 'Not configured'
+      }
     };
 
   } catch (error) {
     logger.error(`Failed to send takedown email:`, error);
+    logger.error(`Error details:`, {
+      message: error.message,
+      code: error.code,
+      command: error.command,
+      response: error.response,
+      responseCode: error.responseCode
+    });
+    
     return {
       sent: false,
-      error: error.message
+      error: error.message || 'Failed to send email',
+      message: error.message || 'SMTP error occurred',
+      verification: {
+        smtpConfigured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+        smtpHost: process.env.SMTP_HOST || 'Not configured',
+        fromAddress: process.env.SMTP_FROM || process.env.SMTP_USER || 'Not configured',
+        errorCode: error.code,
+        errorMessage: error.message
+      }
     };
   }
 }
@@ -112,11 +241,25 @@ function formatValidationResults(validation) {
   return result;
 }
 
-function generateEmailHTML(report, reason) {
+function generateEmailHTML(report, reason, recipient = null) {
+  // Add recipient-specific context
+  let recipientNote = '';
+  if (recipient) {
+    if (recipient.includes('cloudflare')) {
+      recipientNote = '<p style="background-color: #e3f2fd; padding: 10px; border-left: 4px solid #2196f3;"><strong>Note:</strong> This domain appears to be using Cloudflare services. Please investigate and take appropriate action.</p>';
+    } else if (recipient.includes('apwg')) {
+      recipientNote = '<p style="background-color: #f3e5f5; padding: 10px; border-left: 4px solid #9c27b0;"><strong>Note:</strong> This report is being tracked by the Anti-Phishing Working Group for coordination purposes.</p>';
+    } else {
+      recipientNote = `<p style="background-color: #fff3e0; padding: 10px; border-left: 4px solid #ff9800;"><strong>Note:</strong> This abuse report is being sent to your organization as the hosting provider or registrar for this domain.</p>`;
+    }
+  }
+
   return `
     <html>
     <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #d32f2f;">🚨 AUTOMATED PHISHING REPORT</h2>
+      
+      ${recipientNote}
       
       <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
         <strong>Malicious URL:</strong> <code>${report.url}</code><br>

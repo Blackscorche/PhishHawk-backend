@@ -392,10 +392,12 @@ export const submitPhishingReport = async (req, res) => {
 export const getAllReports = async (req, res) => {
   // Check if MongoDB is connected
   if (mongoose.connection.readyState !== 1) {
+    logger.warn('getAllReports called but MongoDB not connected');
     return res.json({
-      success: true,
+      success: false,
       data: [],
-      message: 'Database not available - returning empty results',
+      error: 'Database not available',
+      message: 'MongoDB is not connected. Please check your connection.',
       dbAvailable: false
     });
   }
@@ -431,6 +433,7 @@ export const getAllReports = async (req, res) => {
     res.json({
       success: true,
       data: result.docs,
+      dbAvailable: true,
       pagination: {
         currentPage: result.page,
         totalPages: result.totalPages,
@@ -554,39 +557,128 @@ export const reanalyzeReport = async (req, res) => {
 export const submitTakedown = async (req, res) => {
   try {
     const { id } = req.params;
-    const { reason, url } = req.body; // Allow URL to be passed for temp reports
+    const { reason, url } = req.body;
+    
+    const dbAvailable = mongoose.connection.readyState === 1;
+    if (!dbAvailable) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database not available. Cannot process takedown.',
+        suggestion: 'Please ensure MongoDB is connected and try again.'
+      });
+    }
     
     let report = null;
-    let isTempReport = false;
+    let isNewReport = false;
     
-    // Check if this is a temp report (not saved to DB)
+    // Check if this is a temp report or new URL
     if (id === 'temp' || !mongoose.Types.ObjectId.isValid(id)) {
-      isTempReport = true;
-      // For temp reports, we need the URL from the request body
+      // New URL - need to create full report with analysis
       if (!url) {
         return res.status(400).json({
           success: false,
-          message: 'URL is required for temporary reports'
+          message: 'URL is required for takedown request'
         });
       }
-      report = { url, riskScore: 0, riskLevel: 'Low' }; // Create a minimal report object
-    } else {
-      // Try to find report in database
-      if (mongoose.connection.readyState === 1) {
-        report = await PhishingReport.findById(id);
-        if (!report) {
-          return res.status(404).json({
+      
+      // Normalize URL
+      let normalizedUrl = url.trim();
+      if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
+        normalizedUrl = 'https://' + normalizedUrl;
+      }
+      
+      // Check if URL already exists
+      const existing = await PhishingReport.findOne({ url: normalizedUrl });
+      if (existing) {
+        report = existing;
+      } else {
+        // Create new report with full analysis
+        isNewReport = true;
+        logger.info(`[TAKEDOWN] New URL submitted for takedown: ${normalizedUrl}`);
+        logger.info(`[TAKEDOWN] Running full VirusTotal + URLhaus analysis...`);
+        
+        // Full intelligence gathering and risk scoring
+        const scoringResult = await riskScoringEngine.processDomain(normalizedUrl);
+        
+        // Extract domain
+        let domain;
+        try {
+          const urlObj = new URL(normalizedUrl);
+          domain = urlObj.hostname.replace(/^www\./, '');
+        } catch (error) {
+          return res.status(400).json({
             success: false,
-            message: 'Report not found'
+            error: 'Invalid URL format'
           });
         }
-      } else {
-        // DB not available, but we have an ID - this shouldn't happen, but handle it
-        return res.status(503).json({
-          success: false,
-          message: 'Database not available. Cannot process takedown for saved reports.',
-          suggestion: 'Please resubmit the URL to create a new scan, then request takedown.'
+        
+        // Create and save report with full intelligence data
+        report = new PhishingReport({
+          url: normalizedUrl,
+          source: 'manual_takedown',
+          priority: scoringResult.riskScore >= 70 ? 'high' : 'medium',
+          riskScore: scoringResult.riskScore || 50,
+          riskLevel: scoringResult.riskLevel || 'Medium',
+          riskChecks: scoringResult.checks || {},
+          status: scoringResult.riskScore >= 80 ? 'high_risk' : 
+                  scoringResult.riskScore >= 50 ? 'medium_risk' : 'low_risk',
+          validationResults: {
+            virusTotal: scoringResult.intelligence?.virusTotal || null,
+            urlhaus: scoringResult.intelligence?.urlhaus || null
+          },
+          metadata: {
+            takedownRequested: true,
+            requestedAt: new Date().toISOString(),
+            intelligenceGathered: true
+          },
+          takedownSubmitted: false
         });
+        
+        await report.save();
+        await AuditLogger.logIntelligenceGatheringStart(report._id, domain);
+        
+        // Log intelligence results
+        if (scoringResult.intelligence?.virusTotal) {
+          await AuditLogger.logVirusTotalScan(report._id, domain, scoringResult.intelligence.virusTotal);
+        }
+        if (scoringResult.intelligence?.urlhaus) {
+          await AuditLogger.logUrlhausCheck(report._id, domain, scoringResult.intelligence.urlhaus);
+        }
+        
+        logger.info(`[TAKEDOWN] Report created with full analysis: ${report._id}`);
+        logger.info(`[TAKEDOWN] Risk Score: ${scoringResult.riskScore}/100, VirusTotal: ${scoringResult.intelligence?.virusTotal?.malicious || 0} engines, URLhaus: ${scoringResult.intelligence?.urlhaus?.isPhish ? 'Confirmed' : 'Not found'}`);
+      }
+    } else {
+      // Existing report - ensure it has full intelligence data
+      report = await PhishingReport.findById(id);
+      if (!report) {
+        return res.status(404).json({
+          success: false,
+          message: 'Report not found'
+        });
+      }
+      
+      // If report doesn't have full intelligence, gather it now
+      if (!report.validationResults?.virusTotal || !report.metadata?.intelligenceGathered) {
+        logger.info(`[TAKEDOWN] Report missing intelligence data, gathering now...`);
+        const scoringResult = await riskScoringEngine.processDomain(report.url);
+        
+        // Update report with intelligence data
+        report.validationResults = {
+          virusTotal: scoringResult.intelligence?.virusTotal || report.validationResults?.virusTotal || null,
+          urlhaus: scoringResult.intelligence?.urlhaus || report.validationResults?.urlhaus || null
+        };
+        report.riskScore = scoringResult.riskScore || report.riskScore;
+        report.riskLevel = scoringResult.riskLevel || report.riskLevel;
+        report.riskChecks = { ...report.riskChecks, ...scoringResult.checks };
+        report.metadata = {
+          ...report.metadata,
+          intelligenceGathered: true,
+          intelligenceUpdatedAt: new Date().toISOString()
+        };
+        
+        await report.save();
+        logger.info(`[TAKEDOWN] Intelligence data updated for report: ${report._id}`);
       }
     }
 
@@ -602,42 +694,54 @@ export const submitTakedown = async (req, res) => {
       });
     }
 
-    // Phase 2: Cloudflare Registrar API Enforcement
+    // Phase 2: Cloudflare Registrar API Enforcement + Email Takedown
     let takedownResult = null;
+    let emailResult = null;
+    
+    // Send takedown email to hosting provider/registrar
+    try {
+      logger.info(`[TAKEDOWN] Sending takedown email for ${domain}`);
+      emailResult = await sendTakedownEmail(report, reason || `Takedown request - Risk Score: ${report.riskScore || 0}/100`);
+      if (emailResult.sent) {
+        logger.info(`[TAKEDOWN] Takedown email sent successfully`);
+      }
+    } catch (emailError) {
+      logger.warn(`[TAKEDOWN] Failed to send takedown email:`, emailError.message);
+      emailResult = { sent: false, error: emailError.message };
+    }
+    
+    // Cloudflare API takedown (if configured)
     if (cloudflareService.isConfigured()) {
       try {
-        logger.info(`[TAKEDOWN] Initiating takedown for ${domain} (${isTempReport ? 'temp report' : 'saved report'})`);
+        logger.info(`[TAKEDOWN] Initiating Cloudflare takedown for ${domain}`);
         takedownResult = await cloudflareService.initiateDomainTakedown(
           report.url,
-          reason || `Manual takedown request - Risk Score: ${report.riskScore || 0}/100`
+          reason || `Takedown request - Risk Score: ${report.riskScore || 0}/100 - VirusTotal: ${report.validationResults?.virusTotal?.malicious || 0} engines flagged`
         );
         
-        // Log takedown (only if report exists in DB)
-        if (!isTempReport && report._id && mongoose.connection.readyState === 1) {
-          try {
-            await AuditLogger.logTakedownInitiated(report._id, domain, takedownResult);
-            
-            if (takedownResult.success) {
-              await AuditLogger.logTakedownCompleted(report._id, domain, {
-                takedownInitiated: true,
-                cloudflareResult: takedownResult,
-                timestamp: new Date().toISOString()
-              });
-            } else {
-              await AuditLogger.logTakedownFailed(report._id, domain, new Error(takedownResult.message));
-            }
-          } catch (auditError) {
-            logger.warn('Failed to log takedown to audit log:', auditError.message);
+        // Log takedown to audit log
+        try {
+          await AuditLogger.logTakedownInitiated(report._id, domain, takedownResult);
+          
+          if (takedownResult.success) {
+            await AuditLogger.logTakedownCompleted(report._id, domain, {
+              takedownInitiated: true,
+              cloudflareResult: takedownResult,
+              emailResult: emailResult,
+              timestamp: new Date().toISOString()
+            });
+          } else {
+            await AuditLogger.logTakedownFailed(report._id, domain, new Error(takedownResult.message || 'Cloudflare takedown failed'));
           }
+        } catch (auditError) {
+          logger.warn('Failed to log takedown to audit log:', auditError.message);
         }
       } catch (error) {
         logger.error('Error in Cloudflare takedown:', error);
-        if (!isTempReport && report._id && mongoose.connection.readyState === 1) {
-          try {
-            await AuditLogger.logTakedownFailed(report._id, domain, error);
-          } catch (auditError) {
-            logger.warn('Failed to log takedown error:', auditError.message);
-          }
+        try {
+          await AuditLogger.logTakedownFailed(report._id, domain, error);
+        } catch (auditError) {
+          logger.warn('Failed to log takedown error:', auditError.message);
         }
         takedownResult = { success: false, error: error.message };
       }
@@ -647,40 +751,71 @@ export const submitTakedown = async (req, res) => {
         message: 'Cloudflare API not configured',
         skipped: true 
       };
-      logger.warn('[TAKEDOWN] Cloudflare API not configured - takedown skipped');
+      logger.warn('[TAKEDOWN] Cloudflare API not configured - email takedown sent only');
     }
 
-    // Update report in database (only if it exists in DB)
-    if (!isTempReport && report._id && mongoose.connection.readyState === 1) {
+      // Update report in database with takedown results
       try {
-        report.takedownSubmitted = takedownResult?.success || false;
-        report.status = takedownResult?.success ? 'takedown_initiated' : report.status;
+        report.takedownSubmitted = takedownResult?.success || emailResult?.sent || false;
+        report.status = takedownResult?.success ? 'takedown_initiated' :
+                       emailResult?.sent ? 'takedown_sent' :
+                       report.status;
+        
+        // Set takedown time for latency calculation
+        const now = new Date();
         report.metadata = {
           ...report.metadata,
           cloudflareTakedown: takedownResult,
-          manualTakedown: true
+          emailTakedown: emailResult,
+          takedownRequestedAt: now.toISOString(),
+          takedownTime: now.toISOString(), // For latency calculation
+          takedownReason: reason || 'Manual takedown request'
         };
+
         await report.save();
-        logger.info(`[TAKEDOWN] Report updated in database: ${report._id}`);
-      } catch (dbError) {
-        logger.warn('Failed to update report in database:', dbError.message);
-      }
-    } else if (isTempReport) {
-      logger.info('[TAKEDOWN] Takedown processed for temp report (not saved to DB)');
+      logger.info(`[TAKEDOWN] Report saved to database with full intelligence and takedown data: ${report._id}`);
+      logger.info(`[TAKEDOWN] VirusTotal: ${report.validationResults?.virusTotal?.malicious || 0}/${report.validationResults?.virusTotal?.total || 0} engines, URLhaus: ${report.validationResults?.urlhaus?.isPhish ? 'Confirmed' : 'Not found'}`);
+    } catch (dbError) {
+      logger.error('Failed to save report to database:', dbError.message);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to save report to database',
+        message: dbError.message
+      });
+    }
+    
+    // Determine success message based on what actually happened
+    let successMessage = '';
+    if (takedownResult?.success && emailResult?.sent) {
+      successMessage = 'Takedown submitted successfully via Cloudflare and email';
+    } else if (takedownResult?.success) {
+      successMessage = 'Takedown submitted successfully via Cloudflare';
+    } else if (emailResult?.sent) {
+      successMessage = 'Takedown email sent successfully to hosting provider';
+    } else if (emailResult?.error) {
+      successMessage = `Takedown email failed: ${emailResult.error}`;
+    } else if (takedownResult?.skipped) {
+      successMessage = 'Report saved with full intelligence data. Email takedown requires SMTP configuration.';
+    } else {
+      successMessage = 'Report saved with full intelligence data';
     }
     
     res.json({
-      success: true,
-      data: isTempReport ? { url: report.url, ...takedownResult } : report,
-      message: takedownResult?.success 
-        ? 'Takedown submitted successfully via Cloudflare' 
-        : takedownResult?.skipped
-        ? 'Cloudflare API not configured - Takedown skipped'
-        : takedownResult?.error
-        ? `Takedown request failed: ${takedownResult.error}`
-        : 'Takedown attempted but failed',
-      takedownResult,
-      isTempReport
+      success: emailResult?.sent || takedownResult?.success || true, // Success if anything worked or at least saved
+      data: report,
+      message: successMessage,
+      takedownResult: {
+        cloudflare: takedownResult,
+        email: emailResult,
+        cloudflareConfigured: cloudflareService.isConfigured(),
+        emailConfigured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS)
+      },
+      intelligence: {
+        virusTotal: report.validationResults?.virusTotal,
+        urlhaus: report.validationResults?.urlhaus,
+        riskScore: report.riskScore,
+        riskLevel: report.riskLevel
+      }
     });
   } catch (err) {
     logger.error('Error submitting takedown:', err);
@@ -743,8 +878,7 @@ export const getMetrics = async (req, res) => {
       totalReports,
       highRiskCount,
       resolvedCount,
-      pendingCount,
-      latencyData
+      pendingCount
     ] = await Promise.all([
       // Total Reports - count of all scanned URLs
       PhishingReport.countDocuments(),
@@ -764,47 +898,71 @@ export const getMetrics = async (req, res) => {
       PhishingReport.countDocuments({
         status: { $in: ['pending', 'high_risk', 'medium_risk', 'low_risk'] },
         takedownSubmitted: false
-      }),
-      
-      // Avg Latency - avg(timeDetected → timeTakenDown)
-      // Calculate from metadata.takedownTime or updatedAt where status is resolved
-      PhishingReport.aggregate([
-        {
-          $match: {
-            status: { $in: ['resolved', 'takedown_initiated', 'takedown_sent'] },
-            createdAt: { $exists: true }
-          }
-        },
-        {
-          $project: {
-            latency: {
-              $cond: {
-                if: { $and: [{ $ne: ['$metadata.takedownTime', null] }, { $ne: ['$metadata.takedownTime', undefined] }] },
-                then: {
-                  $subtract: [
-                    { $dateFromString: { dateString: '$metadata.takedownTime' } },
-                    '$createdAt'
-                  ]
-                },
-                else: {
-                  $subtract: ['$updatedAt', '$createdAt']
-                }
-              }
-            }
-          }
-        },
-        {
-          $group: {
-            _id: null,
-            avgLatency: { $avg: '$latency' }
-          }
-        }
-      ])
+      })
     ]);
 
-    const avgLatency = latencyData[0]?.avgLatency 
-      ? Math.round(latencyData[0].avgLatency / (1000 * 60)) // Convert to minutes
-      : 0;
+    // Avg Latency - avg(timeDetected → timeTakenDown)
+    // Calculate from metadata.takedownTime or updatedAt where status is resolved
+    // Use a simpler approach: find resolved reports and calculate latency in JavaScript
+    const resolvedReports = await PhishingReport.find({
+      status: { $in: ['resolved', 'takedown_initiated', 'takedown_sent'] },
+      createdAt: { $exists: true }
+    }).select('createdAt updatedAt metadata').lean();
+    
+    let latencySum = 0;
+    let latencyCount = 0;
+    
+    resolvedReports.forEach(report => {
+      let takedownTime = null;
+      
+      // Try to get takedownTime from metadata
+      if (report.metadata?.takedownTime) {
+        try {
+          takedownTime = new Date(report.metadata.takedownTime);
+          if (isNaN(takedownTime.getTime())) {
+            takedownTime = null;
+          }
+        } catch (e) {
+          takedownTime = null;
+        }
+      }
+      
+      // Fallback to updatedAt if takedownTime not available
+      if (!takedownTime && report.updatedAt) {
+        takedownTime = new Date(report.updatedAt);
+      }
+      
+      // Calculate latency if we have both dates
+      if (takedownTime && report.createdAt) {
+        const createdAt = new Date(report.createdAt);
+        if (!isNaN(createdAt.getTime()) && !isNaN(takedownTime.getTime())) {
+          const latencyMs = takedownTime.getTime() - createdAt.getTime();
+          if (latencyMs > 0) {
+            latencySum += latencyMs;
+            latencyCount++;
+          }
+        }
+      }
+    });
+    
+    const latencyData = latencyCount > 0 
+      ? [{ avgLatency: latencySum / latencyCount }]
+      : [];
+
+    // Calculate average latency in minutes (for display)
+    let avgLatency = 0;
+    if (latencyData && latencyData.length > 0 && latencyData[0]?.avgLatency) {
+      const latencyMs = latencyData[0].avgLatency;
+      // Check if latencyMs is a valid number
+      if (typeof latencyMs === 'number' && !isNaN(latencyMs) && isFinite(latencyMs) && latencyMs > 0) {
+        const latencyMinutes = latencyMs / (1000 * 60); // Convert to minutes
+        avgLatency = Math.round(latencyMinutes * 10) / 10; // Round to 1 decimal place
+        // Ensure it's not NaN or Infinity
+        if (isNaN(avgLatency) || !isFinite(avgLatency)) {
+          avgLatency = 0;
+        }
+      }
+    }
 
     const metrics = {
       totalReports,
@@ -817,7 +975,8 @@ export const getMetrics = async (req, res) => {
     
     res.json({
       success: true,
-      data: metrics
+      data: metrics,
+      dbAvailable: true
     });
   } catch (err) {
     logger.error('Error fetching metrics:', err);

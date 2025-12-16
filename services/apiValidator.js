@@ -246,13 +246,32 @@ export class APIValidator {
           message: 'URL not found in URLhaus database'
         };
       } else {
-        // Unknown response format
-        logger.warn('URLhaus returned unexpected query_status:', data.query_status);
+        // Unknown response format - check if it's actually a valid response
+        const queryStatus = data.query_status;
+        if (queryStatus === undefined && data.query_status === undefined) {
+          // Response might be in different format - check for url_status instead
+          if (data.url_status === 'online' || data.url_status === 'offline') {
+            return {
+              isPhish: data.threat === 'phishing' || data.threat === 'malware_download',
+              verified: true,
+              urlStatus: data.url_status,
+              queryStatus: 'ok',
+              threat: data.threat,
+              tags: data.tags
+            };
+          }
+        }
+        
+        // Only log warning if we truly don't understand the response
+        if (queryStatus !== undefined) {
+          logger.warn('URLhaus returned unexpected query_status:', queryStatus);
+        }
+        
         return {
           isPhish: false,
           verified: false,
           urlStatus: 'unknown',
-          queryStatus: data.query_status || 'unknown',
+          queryStatus: queryStatus || 'unknown',
           rawResponse: data
         };
       }
