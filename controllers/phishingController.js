@@ -21,16 +21,16 @@ const cloudflareService = new CloudflareRegistrarService();
 export const submitPhishingReport = async (req, res) => {
   let report = null;
   let dbAvailable = mongoose.connection.readyState === 1;
-  
+
   try {
     const { url, source = 'manual', priority = 'medium' } = req.body;
-    
+
     // Normalize URL - add protocol if missing
     let normalizedUrl = url.trim();
     if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
       normalizedUrl = 'https://' + normalizedUrl;
     }
-    
+
     // Validate URL format
     let domain;
     try {
@@ -43,7 +43,7 @@ export const submitPhishingReport = async (req, res) => {
         message: 'Please provide a valid URL (e.g., https://example.com or example.com)'
       });
     }
-    
+
     // Use normalized URL for processing
     const urlToProcess = normalizedUrl;
 
@@ -68,7 +68,7 @@ export const submitPhishingReport = async (req, res) => {
     // PHASE 1: INTELLIGENCE GATHERING
     // ============================================
     logger.info(`[FLOWCHART] Phase 1: Intelligence Gathering for ${urlToProcess}`);
-    
+
     // Create initial report (only if DB available)
     if (dbAvailable) {
       try {
@@ -93,7 +93,7 @@ export const submitPhishingReport = async (req, res) => {
     logger.info(`[SCAN] Starting URL analysis for: ${urlToProcess}`);
     const intelligence = await riskScoringEngine.gatherIntelligence(urlToProcess);
     logger.info(`[SCAN] Intelligence gathering completed`);
-    
+
     // Log results (only if DB available and report exists)
     if (dbAvailable && report) {
       try {
@@ -112,17 +112,17 @@ export const submitPhishingReport = async (req, res) => {
     // AUTOMATED RISK SCORING ENGINE
     // ============================================
     logger.info(`[FLOWCHART] Automated Risk Scoring Engine for ${urlToProcess}`);
-    
+
     const scoringResult = await riskScoringEngine.calculateRiskScore(urlToProcess, intelligence);
     logger.info(`[SCAN] Risk score calculated: ${scoringResult.score}% (${scoringResult.riskLevel})`);
-    
+
     // Log risk score (only if DB available)
     if (dbAvailable && report) {
       try {
         await AuditLogger.logRiskScore(
-          report._id, 
-          domain, 
-          scoringResult.score, 
+          report._id,
+          domain,
+          scoringResult.score,
           scoringResult.riskLevel,
           scoringResult.checks
         );
@@ -143,8 +143,8 @@ export const submitPhishingReport = async (req, res) => {
         virusTotal: intelligence.virusTotal,
         urlhaus: intelligence.urlhaus
       },
-      status: scoringResult.score >= 70 ? 'high_risk' : 
-             scoringResult.score >= 40 ? 'medium_risk' : 'low_risk',
+      status: scoringResult.score >= 70 ? 'high_risk' :
+        scoringResult.score >= 40 ? 'medium_risk' : 'low_risk',
       scannedAt: new Date(),
       dbSaved: false
     };
@@ -177,13 +177,13 @@ export const submitPhishingReport = async (req, res) => {
     // DECISION: High-Risk vs Low-Risk
     // ============================================
     const isHighRisk = scoringResult.score >= 70;
-    
+
     if (isHighRisk) {
       // ============================================
       // HIGH-RISK PATH: Phase 2 - Enforcement
       // ============================================
       logger.info(`[FLOWCHART] High-Risk Score (${scoringResult.score}) - Initiating Phase 2: Enforcement`);
-      
+
       if (dbAvailable && report) {
         try {
           report.status = 'high_risk';
@@ -200,14 +200,14 @@ export const submitPhishingReport = async (req, res) => {
       if (cloudflareService.isConfigured()) {
         try {
           logger.info(`[FLOWCHART] Phase 2: Cloudflare Registrar API - Initiating takedown for ${domain}`);
-          
+
           takedownResult = await cloudflareService.initiateDomainTakedown(
             urlToProcess,
             `Automated phishing detection - Risk Score: ${scoringResult.score}/100`
           );
-          
+
           takedownSuccess = takedownResult.success || false;
-          
+
           // Log takedown initiation (only if DB available)
           if (dbAvailable && report) {
             try {
@@ -216,7 +216,7 @@ export const submitPhishingReport = async (req, res) => {
               logger.warn('Failed to log takedown initiation:', dbError.message);
             }
           }
-          
+
           if (takedownSuccess) {
             logger.info(`[FLOWCHART] Cloudflare takedown initiated successfully for ${domain}`);
           } else {
@@ -243,8 +243,8 @@ export const submitPhishingReport = async (req, res) => {
       } else {
         logger.warn('[FLOWCHART] Cloudflare API not configured - skipping Phase 2 enforcement');
         logger.info('[FLOWCHART] High-risk domain logged for manual review (Cloudflare not configured)');
-        takedownResult = { 
-          success: false, 
+        takedownResult = {
+          success: false,
           message: 'Cloudflare API not configured - Domain logged for manual review',
           skipped: true,
           action: 'logged_for_review'
@@ -280,7 +280,7 @@ export const submitPhishingReport = async (req, res) => {
 
       // Confirmation & Immutable Audit Log
       logger.info(`[FLOWCHART] Confirmation & Immutable Audit Log for ${domain}`);
-      
+
       const confirmation = {
         takedownInitiated: takedownSuccess,
         cloudflareResult: takedownResult,
@@ -315,19 +315,19 @@ export const submitPhishingReport = async (req, res) => {
       return res.status(201).json({
         success: true,
         data: dbAvailable && report ? report : responseData,
-        message: takedownSuccess 
-          ? 'High risk detected - Domain takedown initiated via Cloudflare' 
+        message: takedownSuccess
+          ? 'High risk detected - Domain takedown initiated via Cloudflare'
           : takedownResult?.skipped
-          ? 'High risk detected - Domain logged for manual review (Cloudflare not configured)'
-          : 'High risk detected - Takedown attempted but failed',
+            ? 'High risk detected - Domain logged for manual review (Cloudflare not configured)'
+            : 'High risk detected - Takedown attempted but failed',
         flow: {
           phase1: 'Intelligence Gathering - Completed',
           riskScoring: `Risk Score: ${scoringResult.score}/100 (${scoringResult.riskLevel})`,
-          phase2: takedownSuccess 
-            ? 'Enforcement - Takedown Initiated' 
+          phase2: takedownSuccess
+            ? 'Enforcement - Takedown Initiated'
             : takedownResult?.skipped
-            ? 'Enforcement - Skipped (Cloudflare not configured) - Logged for Review'
-            : 'Enforcement - Failed',
+              ? 'Enforcement - Skipped (Cloudflare not configured) - Logged for Review'
+              : 'Enforcement - Failed',
           auditLog: 'Confirmation & Immutable Audit Log - Created'
         }
       });
@@ -337,14 +337,14 @@ export const submitPhishingReport = async (req, res) => {
       // LOW-RISK PATH: Log & Flag for Review
       // ============================================
       logger.info(`[FLOWCHART] Low-Risk Score (${scoringResult.score}) - Logging & Flagging for Review`);
-      
+
       if (dbAvailable && report) {
         try {
           report.status = scoringResult.score >= 40 ? 'medium_risk' : 'low_risk';
           await report.save();
           await AuditLogger.logFlaggedForReview(
-            report._id, 
-            domain, 
+            report._id,
+            domain,
             `Low risk score (${scoringResult.score}/100) - Manual review required`
           );
         } catch (dbError) {
@@ -368,7 +368,7 @@ export const submitPhishingReport = async (req, res) => {
   } catch (err) {
     logger.error('Error submitting phishing report:', err.message || err);
     logger.error('Error stack:', err.stack);
-    
+
     // Try to log the error in audit log if report exists and DB is available
     if (report && report._id && mongoose.connection.readyState === 1) {
       try {
@@ -381,7 +381,7 @@ export const submitPhishingReport = async (req, res) => {
       }
     }
 
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: "Internal server error",
       message: process.env.NODE_ENV === 'development' ? (err.message || String(err)) : undefined
@@ -402,12 +402,12 @@ export const getAllReports = async (req, res) => {
     });
   }
   try {
-    const { 
-      page = 1, 
-      limit = 50, 
-      status, 
-      priority, 
-      minRisk, 
+    const {
+      page = 1,
+      limit = 50,
+      status,
+      priority,
+      minRisk,
       source,
       sortBy = 'createdAt',
       sortOrder = 'desc'
@@ -429,7 +429,7 @@ export const getAllReports = async (req, res) => {
     };
 
     const result = await PhishingReport.paginate(query, options);
-    
+
     res.json({
       success: true,
       data: result.docs,
@@ -446,13 +446,13 @@ export const getAllReports = async (req, res) => {
   } catch (err) {
     logger.error('Error fetching reports:', err.message || err);
     if (err.name === 'MongoServerError' || err.name === 'MongoNetworkError') {
-      return res.status(503).json({ 
+      return res.status(503).json({
         success: false,
         error: "Database connection error",
         message: "MongoDB is not available. Please check your connection."
       });
     }
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       error: "Failed to fetch reports",
       message: process.env.NODE_ENV === 'development' ? (err.message || String(err)) : undefined
@@ -464,7 +464,7 @@ export const getReportById = async (req, res) => {
   try {
     const { id } = req.params;
     const report = await PhishingReport.findById(id);
-    
+
     if (!report) {
       return res.status(404).json({
         success: false,
@@ -478,9 +478,9 @@ export const getReportById = async (req, res) => {
     });
   } catch (err) {
     logger.error('Error fetching report:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: "Failed to fetch report" 
+      error: "Failed to fetch report"
     });
   }
 };
@@ -489,7 +489,7 @@ export const reanalyzeReport = async (req, res) => {
   try {
     const { id } = req.params;
     const report = await PhishingReport.findById(id);
-    
+
     if (!report) {
       return res.status(404).json({
         success: false,
@@ -514,18 +514,26 @@ export const reanalyzeReport = async (req, res) => {
 
     // Phase 1: Intelligence Gathering
     const intelligence = await riskScoringEngine.gatherIntelligence(report.url);
-    await AuditLogger.logVirusTotalScan(report._id, domain, intelligence.virusTotal);
+    try {
+      await AuditLogger.logVirusTotalScan(report._id, domain, intelligence.virusTotal);
       await AuditLogger.logUrlhausCheck(report._id, domain, intelligence.urlhaus);
+    } catch (auditErr) {
+      logger.warn('Failed to log intelligence results during reanalysis:', auditErr.message);
+    }
 
     // Automated Risk Scoring
     const scoringResult = await riskScoringEngine.calculateRiskScore(report.url, intelligence);
-    await AuditLogger.logRiskScore(
-      report._id, 
-      domain, 
-      scoringResult.score, 
-      scoringResult.riskLevel,
-      scoringResult.checks
-    );
+    try {
+      await AuditLogger.logRiskScore(
+        report._id,
+        domain,
+        scoringResult.score,
+        scoringResult.riskLevel,
+        scoringResult.checks
+      );
+    } catch (auditErr) {
+      logger.warn('Failed to log risk score during reanalysis:', auditErr.message);
+    }
 
     // Update report
     report.riskScore = scoringResult.score;
@@ -535,9 +543,9 @@ export const reanalyzeReport = async (req, res) => {
       virusTotal: intelligence.virusTotal,
       urlhaus: intelligence.urlhaus
     };
-    report.status = scoringResult.score >= 70 ? 'high_risk' : 
-                    scoringResult.score >= 40 ? 'medium_risk' : 'low_risk';
-    
+    report.status = scoringResult.score >= 70 ? 'high_risk' :
+      scoringResult.score >= 40 ? 'medium_risk' : 'low_risk';
+
     await report.save();
 
     res.json({
@@ -547,9 +555,9 @@ export const reanalyzeReport = async (req, res) => {
     });
   } catch (err) {
     logger.error('Error re-analyzing report:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: "Failed to re-analyze report" 
+      error: "Failed to re-analyze report"
     });
   }
 };
@@ -558,7 +566,7 @@ export const submitTakedown = async (req, res) => {
   try {
     const { id } = req.params;
     const { reason, url } = req.body;
-    
+
     const dbAvailable = mongoose.connection.readyState === 1;
     if (!dbAvailable) {
       return res.status(503).json({
@@ -567,10 +575,10 @@ export const submitTakedown = async (req, res) => {
         suggestion: 'Please ensure MongoDB is connected and try again.'
       });
     }
-    
+
     let report = null;
     let isNewReport = false;
-    
+
     // Check if this is a temp report or new URL
     if (id === 'temp' || !mongoose.Types.ObjectId.isValid(id)) {
       // New URL - need to create full report with analysis
@@ -580,13 +588,13 @@ export const submitTakedown = async (req, res) => {
           message: 'URL is required for takedown request'
         });
       }
-      
+
       // Normalize URL
       let normalizedUrl = url.trim();
       if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {
         normalizedUrl = 'https://' + normalizedUrl;
       }
-      
+
       // Check if URL already exists
       const existing = await PhishingReport.findOne({ url: normalizedUrl });
       if (existing) {
@@ -596,10 +604,10 @@ export const submitTakedown = async (req, res) => {
         isNewReport = true;
         logger.info(`[TAKEDOWN] New URL submitted for takedown: ${normalizedUrl}`);
         logger.info(`[TAKEDOWN] Running full VirusTotal + URLhaus analysis...`);
-        
+
         // Full intelligence gathering and risk scoring
         const scoringResult = await riskScoringEngine.processDomain(normalizedUrl);
-        
+
         // Extract domain
         let domain;
         try {
@@ -611,7 +619,7 @@ export const submitTakedown = async (req, res) => {
             error: 'Invalid URL format'
           });
         }
-        
+
         // Create and save report with full intelligence data
         report = new PhishingReport({
           url: normalizedUrl,
@@ -620,8 +628,8 @@ export const submitTakedown = async (req, res) => {
           riskScore: scoringResult.riskScore || 50,
           riskLevel: scoringResult.riskLevel || 'Medium',
           riskChecks: scoringResult.checks || {},
-          status: scoringResult.riskScore >= 80 ? 'high_risk' : 
-                  scoringResult.riskScore >= 50 ? 'medium_risk' : 'low_risk',
+          status: scoringResult.riskScore >= 80 ? 'high_risk' :
+            scoringResult.riskScore >= 50 ? 'medium_risk' : 'low_risk',
           validationResults: {
             virusTotal: scoringResult.intelligence?.virusTotal || null,
             urlhaus: scoringResult.intelligence?.urlhaus || null
@@ -633,10 +641,10 @@ export const submitTakedown = async (req, res) => {
           },
           takedownSubmitted: false
         });
-        
+
         await report.save();
         await AuditLogger.logIntelligenceGatheringStart(report._id, domain);
-        
+
         // Log intelligence results
         if (scoringResult.intelligence?.virusTotal) {
           await AuditLogger.logVirusTotalScan(report._id, domain, scoringResult.intelligence.virusTotal);
@@ -644,7 +652,7 @@ export const submitTakedown = async (req, res) => {
         if (scoringResult.intelligence?.urlhaus) {
           await AuditLogger.logUrlhausCheck(report._id, domain, scoringResult.intelligence.urlhaus);
         }
-        
+
         logger.info(`[TAKEDOWN] Report created with full analysis: ${report._id}`);
         logger.info(`[TAKEDOWN] Risk Score: ${scoringResult.riskScore}/100, VirusTotal: ${scoringResult.intelligence?.virusTotal?.malicious || 0} engines, URLhaus: ${scoringResult.intelligence?.urlhaus?.isPhish ? 'Confirmed' : 'Not found'}`);
       }
@@ -657,12 +665,12 @@ export const submitTakedown = async (req, res) => {
           message: 'Report not found'
         });
       }
-      
+
       // If report doesn't have full intelligence, gather it now
       if (!report.validationResults?.virusTotal || !report.metadata?.intelligenceGathered) {
         logger.info(`[TAKEDOWN] Report missing intelligence data, gathering now...`);
         const scoringResult = await riskScoringEngine.processDomain(report.url);
-        
+
         // Update report with intelligence data
         report.validationResults = {
           virusTotal: scoringResult.intelligence?.virusTotal || report.validationResults?.virusTotal || null,
@@ -676,7 +684,7 @@ export const submitTakedown = async (req, res) => {
           intelligenceGathered: true,
           intelligenceUpdatedAt: new Date().toISOString()
         };
-        
+
         await report.save();
         logger.info(`[TAKEDOWN] Intelligence data updated for report: ${report._id}`);
       }
@@ -697,7 +705,7 @@ export const submitTakedown = async (req, res) => {
     // Phase 2: Cloudflare Registrar API Enforcement + Email Takedown
     let takedownResult = null;
     let emailResult = null;
-    
+
     // Send takedown email to hosting provider/registrar
     try {
       logger.info(`[TAKEDOWN] Sending takedown email for ${domain}`);
@@ -709,7 +717,7 @@ export const submitTakedown = async (req, res) => {
       logger.warn(`[TAKEDOWN] Failed to send takedown email:`, emailError.message);
       emailResult = { sent: false, error: emailError.message };
     }
-    
+
     // Cloudflare API takedown (if configured)
     if (cloudflareService.isConfigured()) {
       try {
@@ -718,11 +726,11 @@ export const submitTakedown = async (req, res) => {
           report.url,
           reason || `Takedown request - Risk Score: ${report.riskScore || 0}/100 - VirusTotal: ${report.validationResults?.virusTotal?.malicious || 0} engines flagged`
         );
-        
+
         // Log takedown to audit log
         try {
           await AuditLogger.logTakedownInitiated(report._id, domain, takedownResult);
-          
+
           if (takedownResult.success) {
             await AuditLogger.logTakedownCompleted(report._id, domain, {
               takedownInitiated: true,
@@ -746,33 +754,33 @@ export const submitTakedown = async (req, res) => {
         takedownResult = { success: false, error: error.message };
       }
     } else {
-      takedownResult = { 
-        success: false, 
+      takedownResult = {
+        success: false,
         message: 'Cloudflare API not configured',
-        skipped: true 
+        skipped: true
       };
       logger.warn('[TAKEDOWN] Cloudflare API not configured - email takedown sent only');
     }
 
-      // Update report in database with takedown results
-      try {
-        report.takedownSubmitted = takedownResult?.success || emailResult?.sent || false;
-        report.status = takedownResult?.success ? 'takedown_initiated' :
-                       emailResult?.sent ? 'takedown_sent' :
-                       report.status;
-        
-        // Set takedown time for latency calculation
-        const now = new Date();
-        report.metadata = {
-          ...report.metadata,
-          cloudflareTakedown: takedownResult,
-          emailTakedown: emailResult,
-          takedownRequestedAt: now.toISOString(),
-          takedownTime: now.toISOString(), // For latency calculation
-          takedownReason: reason || 'Manual takedown request'
-        };
+    // Update report in database with takedown results
+    try {
+      report.takedownSubmitted = takedownResult?.success || emailResult?.sent || false;
+      report.status = takedownResult?.success ? 'takedown_initiated' :
+        emailResult?.sent ? 'takedown_sent' :
+          report.status;
 
-        await report.save();
+      // Set takedown time for latency calculation
+      const now = new Date();
+      report.metadata = {
+        ...report.metadata,
+        cloudflareTakedown: takedownResult,
+        emailTakedown: emailResult,
+        takedownRequestedAt: now.toISOString(),
+        takedownTime: now.toISOString(), // For latency calculation
+        takedownReason: reason || 'Manual takedown request'
+      };
+
+      await report.save();
       logger.info(`[TAKEDOWN] Report saved to database with full intelligence and takedown data: ${report._id}`);
       logger.info(`[TAKEDOWN] VirusTotal: ${report.validationResults?.virusTotal?.malicious || 0}/${report.validationResults?.virusTotal?.total || 0} engines, URLhaus: ${report.validationResults?.urlhaus?.isPhish ? 'Confirmed' : 'Not found'}`);
     } catch (dbError) {
@@ -783,7 +791,7 @@ export const submitTakedown = async (req, res) => {
         message: dbError.message
       });
     }
-    
+
     // Determine success message based on what actually happened
     let successMessage = '';
     if (takedownResult?.success && emailResult?.sent) {
@@ -799,7 +807,7 @@ export const submitTakedown = async (req, res) => {
     } else {
       successMessage = 'Report saved with full intelligence data';
     }
-    
+
     res.json({
       success: emailResult?.sent || takedownResult?.success || true, // Success if anything worked or at least saved
       data: report,
@@ -819,9 +827,9 @@ export const submitTakedown = async (req, res) => {
     });
   } catch (err) {
     logger.error('Error submitting takedown:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: "Failed to submit takedown" 
+      error: "Failed to submit takedown"
     });
   }
 };
@@ -830,7 +838,7 @@ export const getAuditLogs = async (req, res) => {
   try {
     const { id } = req.params;
     const { limit = 100 } = req.query;
-    
+
     const report = await PhishingReport.findById(id);
     if (!report) {
       return res.status(404).json({
@@ -840,7 +848,7 @@ export const getAuditLogs = async (req, res) => {
     }
 
     const logs = await AuditLogger.getLogsForReport(id, parseInt(limit));
-    
+
     res.json({
       success: true,
       data: {
@@ -852,9 +860,9 @@ export const getAuditLogs = async (req, res) => {
     });
   } catch (err) {
     logger.error('Error fetching audit logs:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: "Failed to fetch audit logs" 
+      error: "Failed to fetch audit logs"
     });
   }
 };
@@ -872,7 +880,7 @@ export const getMetrics = async (req, res) => {
       dbAvailable: false
     });
   }
-  
+
   try {
     const [
       totalReports,
@@ -882,18 +890,18 @@ export const getMetrics = async (req, res) => {
     ] = await Promise.all([
       // Total Reports - count of all scanned URLs
       PhishingReport.countDocuments(),
-      
+
       // High Risk - riskScore >= 80 AND status = ACTIVE (high_risk or pending)
       PhishingReport.countDocuments({
         riskScore: { $gte: 80 },
         status: { $in: ['high_risk', 'pending'] }
       }),
-      
+
       // Resolved - status = TAKEN_DOWN (resolved, takedown_initiated, takedown_sent)
       PhishingReport.countDocuments({
         status: { $in: ['resolved', 'takedown_initiated', 'takedown_sent'] }
       }),
-      
+
       // Pending - takedownStatus = PENDING (status in pending/high_risk/medium_risk/low_risk AND takedownSubmitted = false)
       PhishingReport.countDocuments({
         status: { $in: ['pending', 'high_risk', 'medium_risk', 'low_risk'] },
@@ -908,13 +916,13 @@ export const getMetrics = async (req, res) => {
       status: { $in: ['resolved', 'takedown_initiated', 'takedown_sent'] },
       createdAt: { $exists: true }
     }).select('createdAt updatedAt metadata').lean();
-    
+
     let latencySum = 0;
     let latencyCount = 0;
-    
+
     resolvedReports.forEach(report => {
       let takedownTime = null;
-      
+
       // Try to get takedownTime from metadata
       if (report.metadata?.takedownTime) {
         try {
@@ -926,12 +934,12 @@ export const getMetrics = async (req, res) => {
           takedownTime = null;
         }
       }
-      
+
       // Fallback to updatedAt if takedownTime not available
       if (!takedownTime && report.updatedAt) {
         takedownTime = new Date(report.updatedAt);
       }
-      
+
       // Calculate latency if we have both dates
       if (takedownTime && report.createdAt) {
         const createdAt = new Date(report.createdAt);
@@ -944,8 +952,8 @@ export const getMetrics = async (req, res) => {
         }
       }
     });
-    
-    const latencyData = latencyCount > 0 
+
+    const latencyData = latencyCount > 0
       ? [{ avgLatency: latencySum / latencyCount }]
       : [];
 
@@ -972,7 +980,7 @@ export const getMetrics = async (req, res) => {
       avgLatency,
       lastUpdated: new Date().toISOString()
     };
-    
+
     res.json({
       success: true,
       data: metrics,
@@ -980,9 +988,9 @@ export const getMetrics = async (req, res) => {
     });
   } catch (err) {
     logger.error('Error fetching metrics:', err);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
-      error: "Failed to fetch metrics" 
+      error: "Failed to fetch metrics"
     });
   }
 };
@@ -992,7 +1000,7 @@ export const getUrlhausUrls = async (req, res) => {
   try {
     const urlScraper = new URLScraper();
     const urls = await urlScraper.scrapeUrlhaus();
-    
+
     res.json({
       success: true,
       data: urls,
@@ -1022,7 +1030,7 @@ export const markFalsePositive = async (req, res) => {
   try {
     const { id } = req.params;
     const report = await PhishingReport.findById(id);
-    
+
     if (!report) {
       return res.status(404).json({
         success: false,
@@ -1072,7 +1080,7 @@ export const refreshStatus = async (req, res) => {
   try {
     const { id } = req.params;
     const report = await PhishingReport.findById(id);
-    
+
     if (!report) {
       return res.status(404).json({
         success: false,
@@ -1108,6 +1116,7 @@ export const refreshStatus = async (req, res) => {
 
     // If site is down (HTTP fails AND DNS doesn't resolve), mark as TAKEN_DOWN
     if (isDown && !dnsResolves) {
+      const previousStatus = report.status;
       report.status = 'resolved';
       report.metadata = {
         ...report.metadata,
@@ -1120,7 +1129,7 @@ export const refreshStatus = async (req, res) => {
       try {
         const urlObj = new URL(report.url);
         await AuditLogger.log('status_changed', report._id, urlObj.hostname, {
-          previousStatus: report.status,
+          previousStatus,
           newStatus: 'resolved',
           reason: 'status_refresh',
           isDown,
@@ -1151,7 +1160,7 @@ export const refreshStatus = async (req, res) => {
           status: isDown && !dnsResolves ? 'resolved' : report.status
         }
       },
-      message: isDown && !dnsResolves 
+      message: isDown && !dnsResolves
         ? 'Site is down - marked as resolved'
         : 'Status refreshed'
     });
@@ -1177,20 +1186,20 @@ export const getVirusTotalUrls = async (req, res) => {
   }
 
   try {
-    const { 
-      page = 1, 
+    const {
+      page = 1,
       limit = 50,
       minMalicious = 0
     } = req.query;
 
     const query = {
-      'intelligence.virusTotal': { $exists: true, $ne: null },
-      'intelligence.virusTotal.error': { $exists: false }
+      'validationResults.virusTotal': { $exists: true, $ne: null },
+      'validationResults.virusTotal.error': { $exists: false }
     };
 
     // Filter by minimum malicious count if provided
     if (minMalicious) {
-      query['intelligence.virusTotal.malicious'] = { $gte: parseInt(minMalicious) };
+      query['validationResults.virusTotal.malicious'] = { $gte: parseInt(minMalicious) };
     }
 
     const sort = { createdAt: -1 };
@@ -1202,7 +1211,7 @@ export const getVirusTotalUrls = async (req, res) => {
     };
 
     const result = await PhishingReport.paginate(query, options);
-    
+
     // Format the response to include VirusTotal data
     const formattedData = result.docs.map(report => ({
       _id: report._id,
@@ -1212,9 +1221,9 @@ export const getVirusTotalUrls = async (req, res) => {
       riskScore: report.riskScore,
       status: report.status,
       createdAt: report.createdAt,
-      virusTotal: report.intelligence?.virusTotal || null
+      virusTotal: report.validationResults?.virusTotal || null
     }));
-    
+
     res.json({
       success: true,
       data: formattedData,

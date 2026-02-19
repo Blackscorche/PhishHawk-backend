@@ -192,30 +192,6 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Health check (no connection string leak)
-app.get('/health', (req, res) => {
-  const dbState = mongoose.connection.readyState;
-  const dbStates = {
-    0: 'disconnected',
-    1: 'connected',
-    2: 'connecting',
-    3: 'disconnecting'
-  };
-
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    environment: process.env.NODE_ENV || 'development',
-    database: {
-      status: dbStates[dbState] || 'unknown',
-      readyState: dbState,
-      connected: dbState === 1,
-      mongoUriSet: !!MONGO_URI
-    }
-  });
-});
-
 // API Routes
 app.use('/api/phishing', phishingRoutes);
 app.use('/api/scraping', scrapingRoutes);
