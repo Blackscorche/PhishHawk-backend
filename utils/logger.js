@@ -7,12 +7,14 @@ const __dirname = path.dirname(__filename);
 
 class Logger {
   constructor() {
-    this.logsDir = path.join(__dirname, '../logs');
-    if (!fs.existsSync(this.logsDir)) {
-      fs.mkdirSync(this.logsDir, { recursive: true });
+    this.isVercel = !!process.env.VERCEL;
+    if (!this.isVercel) {
+      this.logsDir = path.join(__dirname, '../logs');
+      if (!fs.existsSync(this.logsDir)) {
+        fs.mkdirSync(this.logsDir, { recursive: true });
+      }
+      this.logFile = path.join(this.logsDir, `app-${this.getDateString()}.log`);
     }
-
-    this.logFile = path.join(this.logsDir, `app-${this.getDateString()}.log`);
   }
 
   getDateString() {
@@ -31,10 +33,12 @@ class Logger {
     const formatted = this.formatMessage(level, message, ...args);
     process.stdout.write(formatted);
 
-    try {
-      fs.appendFileSync(this.logFile, formatted);
-    } catch (error) {
-      console.error('Failed to write to log file:', error);
+    if (!this.isVercel && this.logFile) {
+      try {
+        fs.appendFileSync(this.logFile, formatted);
+      } catch (error) {
+        console.error('Failed to write to log file:', error);
+      }
     }
   }
 

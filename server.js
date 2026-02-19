@@ -230,8 +230,11 @@ process.on('SIGINT', async () => {
   process.exit(0);
 });
 
-app.listen(PORT, () => {
-  logger.info(`🚀 Server running on port ${PORT}`);
-});
+// Only listen when not running as a Vercel serverless function
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    logger.info(`🚀 Server running on port ${PORT}`);
+  });
+}
 
 export default app;
