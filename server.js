@@ -164,10 +164,12 @@ connectDB();
 // Middleware
 app.use(helmet());
 
-// CORS configuration - allow both Vercel production and localhost for development
+// CORS configuration - allow production frontends and localhost for development/testing
 const allowedOrigins = [
   'https://phish-hawk.vercel.app',
+  'https://phishhawk-pi.vercel.app',
   'http://localhost:5173',
+  'http://localhost:3000',
   process.env.FRONTEND_URL
 ].filter(Boolean); // Remove any undefined values
 
@@ -178,13 +180,11 @@ app.use(cors({
 
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
+    } else if (origin.startsWith('http://localhost:')) {
+      // Allow any localhost port for development/testing
+      callback(null, true);
     } else {
-      // In development, allow localhost with any port
-      if (process.env.NODE_ENV !== 'production' && origin.startsWith('http://localhost:')) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true
