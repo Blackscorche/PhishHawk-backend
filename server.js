@@ -168,6 +168,8 @@ app.use(helmet());
 const allowedOrigins = [
   'https://phish-hawk.vercel.app',
   'https://phishhawk-pi.vercel.app',
+  'https://www.unphishableme.xyz',
+  'https://unphishableme.xyz',
   'http://localhost:5173',
   'http://localhost:3000',
   process.env.FRONTEND_URL
