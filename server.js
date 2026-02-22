@@ -232,7 +232,7 @@ process.on('SIGINT', async () => {
 
 // Only listen when not running as a Vercel serverless function
 if (!process.env.VERCEL) {
-  app.listen(PORT, () => {
+  app.listen(PORT, '0.0.0.0', () => {
     logger.info(`🚀 Server running on port ${PORT}`);
   });
 }
